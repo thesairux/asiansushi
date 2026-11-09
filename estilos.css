@@ -763,6 +763,8 @@ html.editando [data-grupo] { position: relative; }
 }
 .editar-chip:hover { background: var(--amarillo-claro); }
 .pie > .editar-chip { top: auto; bottom: 10px; }
+html.editando [data-p] { cursor: pointer; outline: 2px dashed transparent; outline-offset: 2px; transition: outline-color .15s; }
+html.editando [data-p]:hover { outline-color: rgb(var(--amarillo-rgb) / .85); }
 html.editando [contenteditable] { outline: 2px dashed transparent; outline-offset: 3px; cursor: text; }
 html.editando [contenteditable]:hover { outline-color: rgb(var(--amarillo-rgb) / .85); }
 html.editando [contenteditable]:focus { outline: 2px solid var(--amarillo); }

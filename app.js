@@ -25,6 +25,17 @@
     });
   }
   function plata(n) { return "$" + String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, "."); }
+  /* La carta la escribe el panel: lo que no es texto de confianza se limpia antes de usarlo. */
+  // enlaces: solo https (javascript:, data: y otros esquemas no se usan)
+  function enlaceSeguro(u) { u = String(u == null ? "" : u).trim(); return /^https:\/\//i.test(u) ? u : ""; }
+  // texto de una línea (p. ej. datos de Photon): sin caracteres de control ni saltos de línea
+  function unaLinea(t, max) {
+    return String(t == null ? "" : t).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, max || 160);
+  }
+  // número entero dentro de un rango (min/max de los grupos, etc.)
+  function entero(v, def, min, max) { var n = Math.floor(Number(v)); if (!isFinite(n)) n = def; return Math.min(max, Math.max(min, n)); }
+  // texto dentro de url("…") en un estilo: se escapan comillas, barras y saltos para no salir de la cadena CSS
+  function cadenaCss(t) { return String(t).replace(/["\\\n\r\f]/g, function (c) { return "\\" + c.charCodeAt(0).toString(16) + " "; }); }
   function sinTildes(s) { return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
   function minus(s) { s = String(s || ""); return s.charAt(0).toLowerCase() + s.slice(1); }
   function mayus(s) { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -32,6 +43,24 @@
   function leer(clave) { try { return JSON.parse(localStorage.getItem(clave) || "null"); } catch (e) { return null; } }
   function guardar(clave, valor) { try { localStorage.setItem(clave, JSON.stringify(valor)); } catch (e) { /* sin almacenamiento */ } }
   /* Con "sucursales" en carta.js, el pedido va al WhatsApp de la sucursal elegida; sin elegir, a la primera. */
+  /* Analítica (api/estadisticas.js): cuenta visitas, clics y pedidos por día, sin datos de la persona.
+     Las del embudo se cuentan una vez por visita (sesión). En el panel no se cuenta nada. */
+  function medir(e, datos) {
+    if (PREVIA || location.protocol === "file:") return;
+    var unaVez = ["visita", "abrir", "asistente"].indexOf(e) >= 0;
+    try {
+      if (unaVez) { if (sessionStorage.getItem("medido-" + e)) return; sessionStorage.setItem("medido-" + e, "1"); }
+    } catch (x) { /* sin almacenamiento: se cuenta igual */ }
+    var cuerpo = JSON.stringify(Object.assign({ e: e }, datos || {}));
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon("api/estadisticas", new Blob([cuerpo], { type: "application/json" }))) return;
+      fetch("api/estadisticas", { method: "POST", headers: { "Content-Type": "application/json" }, body: cuerpo, keepalive: true }).catch(function () {});
+    } catch (x) { /* la analítica nunca debe romper la página */ }
+  }
+  function primeraVez(e) {
+    try { if (sessionStorage.getItem("medido-" + e)) return false; sessionStorage.setItem("medido-" + e, "1"); } catch (x) {}
+    return true;
+  }
   function sucursales() { return (N.sucursales || []).filter(function (s) { return s && s.nombre && s.whatsapp; }); }
   function sucursalElegida() {
     var ss = sucursales();
@@ -120,9 +149,9 @@
     var mas = 0;
     var el = (conf && conf.elecciones) || {};
     Object.keys(el).forEach(function (gid) {
-      (el[gid] || []).forEach(function (oid) { var o = opcionDe(gid, oid); if (o && o.suma && o.suma[g.id] > 0) mas += o.suma[g.id]; });
+      (el[gid] || []).forEach(function (oid) { var o = opcionDe(gid, oid); if (o && o.suma && o.suma[g.id] > 0) mas += entero(o.suma[g.id], 0, 0, 50); });
     });
-    return { min: (g.min || 0) + mas, max: (g.max || 1) + mas };
+    return { min: entero(g.min, 0, 0, 50) + mas, max: entero(g.max, 1, 1, 50) + mas };
   }
   /* Al desmarcar una opción con "suma", lo elegido de más en el otro grupo se quita. */
   function recortarElecciones(id, conf) {
@@ -133,7 +162,7 @@
     });
   }
   function tieneOpciones(p) { return !!(p.opciones && p.opciones.length); }
-  function unidad(id) { return PRODUCTOS[id].p.unidad || "Roll"; }
+  function unidad(id) { var u = PRODUCTOS[id].p.unidad; return typeof u === "string" && /^[\p{L} ]{1,20}$/u.test(u) ? u : "Roll"; }
   function personalizable(id) { return tieneOpciones(PRODUCTOS[id].p) || gruposDe(id).length > 0; }
   function opcionDe(grupoId, opId) {
     var g = GRUPOS[grupoId];
@@ -385,12 +414,12 @@
       nombre: N.nombre, direccion: N.direccion, ciudad: N.ciudad, region: N.region,
       "direccion-ciudad": direccionCiudad, horario: horarioCorto(),
       instagram: N.instagram ? "@" + N.instagram : "",
-      facebook: N.facebook,
+      facebook: enlaceSeguro(N.facebook),
       sector: N.sector || N.ciudad,
       "sector-ciudad": [N.sector, N.ciudad].filter(Boolean).join(", "),
       // con el horario confirmado no se agrega ninguna nota (ni arriba ni en la ubicación)
       "nota-horario": !CON_HORARIO || HORARIO_ACTIVO ? "" : "Horario referencial, por confirmar. Escríbenos por WhatsApp antes de venir.",
-      mapa: N.mapa
+      mapa: enlaceSeguro(N.mapa)
     };
     var ss = sucursales();
     $$("[data-dato]").forEach(function (el) {
@@ -418,8 +447,8 @@
     $$("[data-si]").forEach(function (el) { el.hidden = !datos[el.getAttribute("data-si")]; });
     $$("[data-wsp]").forEach(function (a) { a.href = wsp(""); });
     if (N.instagram) $$("[data-instagram]").forEach(function (a) { a.href = "https://www.instagram.com/" + N.instagram + "/"; });
-    if (N.facebook) $$("[data-facebook]").forEach(function (a) { a.href = N.facebook; });
-    if (N.mapa) $$("[data-mapa]").forEach(function (a) { a.href = N.mapa; });
+    if (enlaceSeguro(N.facebook)) $$("[data-facebook]").forEach(function (a) { a.href = enlaceSeguro(N.facebook); });
+    if (enlaceSeguro(N.mapa)) $$("[data-mapa]").forEach(function (a) { a.href = enlaceSeguro(N.mapa); });
     var mapa = $("[data-mapa-embed]");
     if (mapa && N.direccion && !$("#ubicacion").hidden) {
       var busqueda = N.mapaBusqueda || [N.direccion, N.sector, N.ciudad, "Chile"].filter(Boolean).join(", ");
@@ -509,7 +538,7 @@
         '<button class="destacado-flecha siguiente" type="button" data-carrusel="1" aria-label="Promoción siguiente">' + icono("derecha") + "</button>" : "") +
         '<div class="destacado-foto">' + (antes && !misma ? '<img class="previa" src="' + esc(antes) + '" alt="" width="1000" height="725">' : "") +
           '<img class="actual' + (misma ? " lista" : "") + '" src="' + esc(p.foto) + '" alt="Foto de ' + esc(p.nombre) + '" width="1000" height="725"></div>' +
-        '<div class="destacado-panel">' +
+        '<div class="destacado-panel"' + marcaProducto(p) + ">" +
           '<span class="destacado-etiqueta">Promo destacada</span>' +
           '<h2 class="destacado-nombre">' + esc(p.nombre) + "</h2>" +
           '<span class="destacado-precio">' + plata(precioMinimo(p).valor) + "</span>" +
@@ -560,7 +589,7 @@
   var fotoVista = {};
   function fotoLista(img) {
     img.classList.add("lista");
-    if (img.currentSrc) fotoVista[img.getAttribute("src")] = img.currentSrc;
+    if (img.currentSrc && /^(https?:|blob:)/i.test(img.currentSrc)) fotoVista[img.getAttribute("src")] = img.currentSrc;
   }
   function marcarFotos(raiz) {
     $$("img.carga:not(.lista)", raiz).forEach(function (img) { if (img.complete && img.naturalWidth) fotoLista(img); });
@@ -617,9 +646,11 @@
   /* atributo con la ruta del texto, solo en el modo edición del panel */
   function ruta(r) { return EDITAR ? ' data-e="' + esc(r) + '"' : ""; }
   function rutaDe(p, campo) { return ruta(PRODUCTOS[p.id].ruta + "." + campo); }
+  /* en el modo edición, tocar el producto abre su editor en el panel */
+  function marcaProducto(p) { return EDITAR ? ' data-p="' + esc(p.id) + '"' : ""; }
   function notaProducto(p) { return p.nota ? '<p class="fila-incluye"' + rutaDe(p, "nota") + ">" + esc(p.nota) + "</p>" : ""; }
   function fila(p) {
-    return '<li class="fila' + (p.disponible === false ? " fila--agotada" : "") + '">' +
+    return '<li class="fila' + (p.disponible === false ? " fila--agotada" : "") + '"' + marcaProducto(p) + ">" +
       '<div class="fila-texto"><h4 class="fila-nombre"' + rutaDe(p, "nombre") + ">" + esc(p.nombre) + "</h4>" + detalleLista(p) + notaProducto(p) + "</div>" +
       '<div class="fila-lado"><span class="precio">' + precioLista(p) + "</span>" + botonAgregar(p, "fila") + "</div></li>";
   }
@@ -630,7 +661,7 @@
         (chica ? ' srcset="' + esc(chica) + " 600w, " + esc(p.foto) + ' 1000w" sizes="(max-width: 380px) calc(100vw - 56px), (max-width: 640px) calc(50vw - 33px), 300px"' : "") +
         ' alt="Foto de ' + esc(p.nombre) + '" width="1000" height="725" loading="lazy"></div>'
       : '<div class="tarjeta-foto tarjeta-foto--vacia"><img src="img/logo-asian.webp" alt="" width="600" height="600" loading="lazy"></div>';
-    return '<li class="tarjeta' + (p.disponible === false ? " fila--agotada" : "") + '">' + foto +
+    return '<li class="tarjeta' + (p.disponible === false ? " fila--agotada" : "") + '"' + marcaProducto(p) + ">" + foto +
       '<div class="tarjeta-cuerpo"><h4 class="fila-nombre"' + rutaDe(p, "nombre") + ">" + esc(p.nombre) + "</h4>" + detalleLista(p) + notaProducto(p) +
       '<div class="tarjeta-pie"><span class="precio">' + precioLista(p) + "</span>" + botonAgregar(p, "tarjeta") + "</div></div></li>";
   }
@@ -688,7 +719,7 @@
   (function cargar() {
     var g = leer(GUARDADO);
     if (!g || typeof g !== "object") return;
-    ["nombre", "direccion", "pago", "sucursal", "sector"].forEach(function (k) { if (typeof g[k] === "string") pedido[k] = g[k]; });
+    ["nombre", "direccion", "pago", "sucursal", "sector"].forEach(function (k) { if (typeof g[k] === "string") pedido[k] = k === "direccion" ? unaLinea(g[k]) : g[k]; });
     if (typeof g.cupon === "string") pedido.cupon = codigo(g.cupon);
     if (g.modo === "delivery") pedido.modo = "delivery";
     if (Array.isArray(g.items)) {
@@ -749,6 +780,7 @@
     guardarPedido();
     pintarContador(true);
     avisar("Agregado: <b>" + esc(PRODUCTOS[id].p.nombre) + "</b>");
+    medir("agregar", { p: id, primera: primeraVez("agregar") });
   }
   function pintarContador(saltar) {
     var n = cantidadTotal();
@@ -802,7 +834,7 @@
     gruposProducto(id).forEach(function (g) {
       if (g.tipo !== "elegir") return;
       var def = (g.opciones || []).filter(function (o) { return o.porDefecto && o.disponible !== false; }).map(function (o) { return o.id; });
-      if (def.length) conf.elecciones[g.id] = def.slice(0, g.max || 1);
+      if (def.length) conf.elecciones[g.id] = def.slice(0, entero(g.max, 1, 1, 50));
     });
     var ga = gruposArmado(id);
     if (ga.length) {
@@ -819,6 +851,7 @@
   }
   function abrirFicha(id, uid) {
     var item = uid && pedido.items.filter(function (it) { return it.uid === uid; })[0];
+    if (!item) medir("ver", { p: id });
     ficha = { id: id, uid: item ? uid : null, roll: null, accion: null, conf: JSON.parse(JSON.stringify(item ? item.conf : confInicial(id))) };
     pintarFicha();
     abrir(dlgFicha);
@@ -864,7 +897,7 @@
     var max = lim.max;
     var unica = g.tipo === "elegir" && max === 1;
     var ayuda = g.tipo === "extra" || !lim.min ? "Opcional" + (!unica && max > 1 && (g.opciones || []).length > max ? ", hasta " + max : "") : (lim.min === max ? "Elige " + max : "Elige de " + lim.min + " a " + max);
-    return '<fieldset class="grupo"><legend>' + esc(g.nombre) + " <small>" + ayuda + "</small></legend>" +
+    return '<fieldset class="grupo"><legend>' + esc(g.nombre) + " <small>" + esc(ayuda) + "</small></legend>" +
       (g.opciones || []).map(function (o) {
         var marcado = sel.indexOf(o.id) >= 0;
         var bloqueado = o.disponible === false || (!unica && !marcado && sel.length >= max);
@@ -923,7 +956,7 @@
     var cambios = ficha.conf.cambios.map(function (c, k) { return { c: c, k: k }; }).filter(function (x) { return x.c.roll === i; });
     var texto = roll.texto || (total === 1 ? p.detalle || "" : "");
     var html = '<div class="roll' + (abierto ? " abierto" : "") + '">' +
-      '<p class="roll-titulo"><b>' + (total > 1 ? unidad(ficha.id) + " " + (i + 1) : "Tu " + minus(unidad(ficha.id))) + "</b> " + esc(texto) + "</p>";
+      '<p class="roll-titulo"><b>' + (total > 1 ? esc(unidad(ficha.id)) + " " + (i + 1) : "Tu " + esc(minus(unidad(ficha.id)))) + "</b> " + esc(texto) + "</p>";
     var ga = gruposArmado(ficha.id);
     if (ga.length) {
       var elegido = (ficha.conf.armado || [])[i] || {};
@@ -940,7 +973,7 @@
       }).join("") + "</div>";
       var completo = ga.every(function (g) { return elegido[g.id]; });
       var faltan = (ficha.conf.armado || []).some(function (r, k) { return k !== i && ga.some(function (g) { return !(r || {})[g.id]; }); });
-      if (total > 1 && completo && faltan) html += '<button class="copiar" type="button" data-copiar="' + i + '">Repetir ' + (unidad(ficha.id) === "Roll" ? "este roll" : "esta " + minus(unidad(ficha.id))) + ' en los que faltan</button>';
+      if (total > 1 && completo && faltan) html += '<button class="copiar" type="button" data-copiar="' + i + '">Repetir ' + (unidad(ficha.id) === "Roll" ? "este roll" : "esta " + esc(minus(unidad(ficha.id)))) + ' en los que faltan</button>';
     }
     if (cambios.length) {
       html += '<ul class="roll-cambios">' + cambios.map(function (x) {
@@ -972,7 +1005,7 @@
     var html = "";
     // de fondo, la foto que ya se vio en la tarjeta, mientras llega la grande
     if (p.foto) {
-      var fondo = fotoVista[p.foto] ? ' style="background-image:url(&quot;' + esc(fotoVista[p.foto]) + '&quot;)"' : "";
+      var fondo = fotoVista[p.foto] ? ' style="background-image:url(&quot;' + esc(cadenaCss(fotoVista[p.foto])) + '&quot;)"' : "";
       html += '<div class="ficha-foto"' + fondo + '><img class="carga" src="' + esc(p.foto) + '" alt="Foto de ' + esc(p.nombre) + '" width="1000" height="725"></div>';
     }
     html += '<h2 class="ficha-titulo" id="ficha-titulo">' + esc(p.nombre) + "</h2>";
@@ -994,7 +1027,7 @@
       var ga = gruposArmado(ficha.id);
       if (ga.length) {
         var ayudas = [x.cat.ayuda].concat(ga.map(function (g) { return g.ayuda; })).filter(Boolean);
-        html += '<div class="rolls"><h3>' + (rolls.length > 1 ? "Arma tus " + rolls.length + " " + minus(unidad(ficha.id)) + "s" : "Arma tu " + minus(unidad(ficha.id))) + "</h3>" +
+        html += '<div class="rolls"><h3>' + (rolls.length > 1 ? "Arma tus " + rolls.length + " " + esc(minus(unidad(ficha.id))) + "s" : "Arma tu " + esc(minus(unidad(ficha.id)))) + "</h3>" +
           (ayudas.length ? '<p class="rolls-ayuda">' + ayudas.map(esc).join(" ") + "</p>" : "");
       } else {
         var tipos = gruposCambio(ficha.id).map(function (g) { return g.tipo; });
@@ -1190,12 +1223,12 @@
     if (pedido.modo === "retiro" && suc) {
       html += '<div class="retiro-info"><b>Retiras en la sucursal ' + esc(suc.nombre) + "</b>" +
         "<span>" + esc(suc.direccion ? suc.direccion + (N.ciudad ? ", " + N.ciudad : "") : "Te confirmamos la dirección y la hora de retiro por WhatsApp.") + "</span>" +
-        (suc.mapa || suc.direccion ? '<a href="' + esc(suc.mapa || "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent([suc.direccion, N.ciudad, "Chile"].filter(Boolean).join(", "))) + '" target="_blank" rel="noopener">Ver cómo llegar</a>' : "") + "</div>";
+        (enlaceSeguro(suc.mapa) || suc.direccion ? '<a href="' + esc(enlaceSeguro(suc.mapa) || "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent([suc.direccion, N.ciudad, "Chile"].filter(Boolean).join(", "))) + '" target="_blank" rel="noopener">Ver cómo llegar</a>' : "") + "</div>";
     } else if (pedido.modo === "retiro") {
       html += '<div class="retiro-info">' + (N.direccion
         ? "<b>Retiras en " + esc(direccionCompleta()) + "</b>" + (CON_HORARIO ? "<span>" + esc(horarioCorto()) + (HORARIO_ACTIVO ? "" : " (por confirmar)") + "</span>" : "")
         : "<b>Retiro en el local</b><span>Te confirmamos la dirección y la hora de retiro por WhatsApp.</span>") +
-        (N.mapa ? '<a href="' + esc(N.mapa) + '" target="_blank" rel="noopener">Ver cómo llegar</a>' : "") + "</div>";
+        (enlaceSeguro(N.mapa) ? '<a href="' + esc(enlaceSeguro(N.mapa)) + '" target="_blank" rel="noopener">Ver cómo llegar</a>' : "") + "</div>";
     } else {
       var zonas = sectores();
       if (zonas.length) {
@@ -1388,7 +1421,7 @@
     } else {
       l.push("Modalidad: Delivery");
       if (sectorElegido()) l.push("Sector: " + sectorElegido().nombre);
-      l.push("Dirección: " + pedido.direccion.trim());
+      l.push("Dirección: " + unaLinea(pedido.direccion));
     }
     if (pedido.pago) l.push("Pago: " + pedido.pago + (pedido.modo === "delivery" ? " al recibir" : " al retirar"));
     l.push("");
@@ -1427,6 +1460,13 @@
   }
 
   /* ---------- eventos generales ---------- */
+  // clics a WhatsApp: el botón «Enviar pedido» cuenta como pedido enviado (con su total referencial)
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest('a[href*="wa.me/"]');
+    if (!a) return;
+    if (a.hasAttribute("data-enviar")) medir("enviar", { n: subtotal() - descuento() + costoDelivery() });
+    else medir("wsp");
+  }, true);
   document.addEventListener("click", function (e) {
     var t = e.target.closest("button, a");
     if (!t) return;
@@ -1436,6 +1476,7 @@
       if (personalizable(id)) abrirFicha(id, null);
       else agregarAlPedido(id, { cambios: [], elecciones: {}, textos: {} });
     } else if (t.hasAttribute("data-abrir-pedido")) {
+      medir("abrir");
       cuponMsg = "";
       avisados = {};
       pintarPedido();
@@ -1586,8 +1627,10 @@
   revisarNav();
 
   /* Lo que usa el asistente (js/asistente.js): la carta con su stock y horario, y el pedido. */
+  medir("visita");
   window.paginaCarta = {
     previa: PREVIA,
+    medir: medir,
     datos: function () { return C; },
     producto: function (id) { return PRODUCTOS[id] || null; },
     productos: function () { return Object.keys(PRODUCTOS).map(function (id) { return PRODUCTOS[id]; }); },
@@ -1650,6 +1693,12 @@
         e.preventDefault(); e.stopPropagation();
         alPanel(chip ? { type: "pagina-abrir", grupos: chip.getAttribute("data-abrir-grupos").split(" ") }
           : { type: "pagina-abrir", grupos: ["carta"], producto: agregar.getAttribute("data-agregar") });
+        return;
+      }
+      var prod = e.target.closest("[data-p]");
+      if (prod && !e.target.closest(".variedades")) {
+        e.preventDefault(); e.stopPropagation();
+        alPanel({ type: "pagina-abrir", grupos: ["carta"], producto: prod.getAttribute("data-p") });
         return;
       }
       if (e.target.closest("a, [data-abrir-pedido]")) { e.preventDefault(); e.stopPropagation(); }
